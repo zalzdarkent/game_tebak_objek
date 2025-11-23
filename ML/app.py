@@ -72,8 +72,19 @@ def init_models():
     print("✅ All models ready!")
 
 def gabung_teks(row):
-    """Combine objek and deskripsi"""
-    return f"{row['objek']} - {row['deskripsi']}"
+    """Combine objek, deskripsi, kategori, dan kata_kunci untuk embedding lebih kaya"""
+    kategori = row.get('kategori', '')
+    kata_kunci = row.get('kata_kunci', '')
+    
+    # Gabungkan semua informasi untuk semantic understanding yang lebih baik
+    text_parts = [
+        row['objek'],
+        row['deskripsi'],
+        f"Kategori: {kategori}" if kategori else "",
+        f"Kata kunci: {kata_kunci}" if kata_kunci else ""
+    ]
+    
+    return " - ".join([p for p in text_parts if p])
 
 def rebuild_all_models():
     """Rebuild both Semantic and NLP models"""
@@ -90,11 +101,20 @@ def rebuild_all_models():
     train_labels = []
     
     for _, row in df.iterrows():
+        # Gunakan clue_history untuk training
         clues = row["clue_history"].split(", ")
         for c in clues:
             if len(c.strip()) > 2:
                 train_texts.append(c.strip().lower())
                 train_labels.append(row["objek"])
+        
+        # Tambahkan kata_kunci sebagai training data tambahan (boost learning)
+        if 'kata_kunci' in row and pd.notna(row['kata_kunci']):
+            keywords = row['kata_kunci'].split()
+            for keyword in keywords:
+                if len(keyword.strip()) > 2:
+                    train_texts.append(keyword.strip().lower())
+                    train_labels.append(row["objek"])
     
     if len(train_texts) > 0:
         X_tfidf = tfidf.fit_transform(train_texts)
@@ -131,25 +151,61 @@ def predict_naive_bayes(clue):
         return {}
 
 def predict_hybrid(clue, top_k=5, weight_st=0.5, weight_nb=0.5):
-    """Hybrid prediction combining Semantic + Naive Bayes"""
+    """Hybrid prediction combining Semantic + Naive Bayes with Dynamic Weighting"""
     
     # Get scores from both models
     scores_st = predict_semantic(clue)
     scores_nb = predict_naive_bayes(clue)
     
+    # === DYNAMIC WEIGHTING ===
+    # Hitung confidence dari masing-masing model
+    max_st = max(scores_st.values()) if scores_st else 0
+    max_nb = max(scores_nb.values()) if scores_nb else 0
+    
+    # Normalize confidence ke range 0-1
+    confidence_st = max_st  # Sudah 0-1 dari cosine similarity
+    confidence_nb = max_nb  # Sudah 0-1 dari probability
+    
+    # Dynamic weight adjustment
+    # Jika salah satu model sangat yakin (>0.7), beri weight lebih besar
+    # Jika keduanya ragu (<0.4), balance 50-50
+    total_confidence = confidence_st + confidence_nb
+    
+    if total_confidence > 0:
+        # Weight proportional to confidence
+        if confidence_st > 0.7 and confidence_nb < 0.3:
+            # Semantic sangat yakin, NB ragu
+            weight_st_dynamic = 0.8
+            weight_nb_dynamic = 0.2
+        elif confidence_nb > 0.7 and confidence_st < 0.3:
+            # NB sangat yakin, Semantic ragu
+            weight_st_dynamic = 0.2
+            weight_nb_dynamic = 0.8
+        elif confidence_st > 0.6 or confidence_nb > 0.6:
+            # Salah satu cukup yakin, beri weight proporsional
+            weight_st_dynamic = confidence_st / total_confidence
+            weight_nb_dynamic = confidence_nb / total_confidence
+        else:
+            # Keduanya ragu, balance 50-50
+            weight_st_dynamic = 0.5
+            weight_nb_dynamic = 0.5
+    else:
+        # Fallback to default weights
+        weight_st_dynamic = weight_st
+        weight_nb_dynamic = weight_nb
+    
     # Normalize ST scores to 0-1 range
-    max_st = max(scores_st.values()) if scores_st else 1
     min_st = min(scores_st.values()) if scores_st else 0
     range_st = max_st - min_st if max_st != min_st else 1
     
-    # Combine scores
+    # Combine scores with dynamic weights
     final_scores = {}
     for objek in objek_only:
         st_norm = (scores_st.get(objek, 0) - min_st) / range_st
         nb_score = scores_nb.get(objek, 0)
         
-        # Weighted average
-        final_scores[objek] = (weight_st * st_norm) + (weight_nb * nb_score)
+        # Weighted average with dynamic weights
+        final_scores[objek] = (weight_st_dynamic * st_norm) + (weight_nb_dynamic * nb_score)
     
     # Sort and get top_k
     sorted_scores = sorted(final_scores.items(), key=lambda x: x[1], reverse=True)
@@ -160,8 +216,15 @@ def predict_hybrid(clue, top_k=5, weight_st=0.5, weight_nb=0.5):
             "objek": objek,
             "score": round(score, 4),
             "st": round(scores_st.get(objek, 0), 4),
-            "nb": round(scores_nb.get(objek, 0), 4)
+            "nb": round(scores_nb.get(objek, 0), 4),
+            "weight_st": round(weight_st_dynamic, 2),
+            "weight_nb": round(weight_nb_dynamic, 2)
         })
+    
+    # Add metadata about confidence
+    if hasil:
+        hasil[0]["confidence_level"] = "high" if hasil[0]["score"] > 0.7 else "medium" if hasil[0]["score"] > 0.4 else "low"
+    
     return hasil
 
 # ============================================================
@@ -312,9 +375,22 @@ def get_stats():
 
 @app.route('/objects', methods=['GET'])
 def get_objects():
-    """Get all objects in database"""
+    """Get all objects in database with categories"""
     try:
-        objects = df[["objek", "deskripsi"]].to_dict('records')
+        # Pilih kolom yang relevan
+        columns = ["objek", "deskripsi", "kategori", "difficulty"] if "kategori" in df.columns else ["objek", "deskripsi"]
+        objects = df[columns].to_dict('records')
+        
+        # Group by category jika ada
+        if "kategori" in df.columns:
+            categories = df['kategori'].value_counts().to_dict()
+            return jsonify({
+                "success": True,
+                "total": len(objects),
+                "objects": objects,
+                "categories": categories
+            })
+        
         return jsonify({
             "success": True,
             "total": len(objects),
