@@ -8,8 +8,16 @@ const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:5000';
 export interface Prediction {
   objek: string;
   score: number;
-  st: number;
-  nb: number;
+  votes?: number;           // Total voting points
+  st: number;               // Sentence Transformer score
+  nb: number;               // Naive Bayes score
+  lr?: number;              // Logistic Regression score
+  st_rank?: number;         // Rank in ST (0 = not in top 3)
+  nb_rank?: number;         // Rank in NB
+  lr_rank?: number;         // Rank in LR
+  confidence_level?: string; // unanimous/high/medium/low
+  weight_st?: number;       // Dynamic weight for ST (legacy)
+  weight_nb?: number;       // Dynamic weight for NB (legacy)
 }
 
 export interface PredictResponse {

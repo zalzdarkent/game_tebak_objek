@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { Brain, Send, CheckCircle, XCircle, TrendingUp, Database, Sparkles } from 'lucide-react';
+import { Brain, Send, CheckCircle, XCircle, TrendingUp, Database, Sparkles, Vote, Award, Target } from 'lucide-react';
 import { predictObject, submitFeedback, getStats, checkHealth } from '@/lib/api';
 import type { Prediction, StatsResponse } from '@/lib/api';
 
@@ -252,17 +252,18 @@ export default function GamePage() {
                 Prediksi AI
               </h3>
               
-              <div className="space-y-2">
+              <div className="space-y-3">
                 {predictions.map((pred, index) => (
                   <div
                     key={index}
-                    className={`p-4 rounded-lg border-2 transition-all ${
+                    className={`p-4 rounded-xl border-2 transition-all ${
                       index === 0
-                        ? 'bg-purple-50 dark:bg-purple-900/20 border-purple-300 dark:border-purple-700'
+                        ? 'bg-linear-to-br from-purple-50 via-blue-50 to-pink-50 dark:from-purple-900/20 dark:via-blue-900/20 dark:to-pink-900/20 border-purple-400 dark:border-purple-600 shadow-lg'
                         : 'bg-gray-50 dark:bg-gray-700/50 border-gray-200 dark:border-gray-600'
                     }`}
                   >
-                    <div className="flex items-center justify-between">
+                    {/* Header Row */}
+                    <div className="flex items-center justify-between mb-2">
                       <div className="flex items-center gap-3">
                         <span className={`text-lg font-bold ${
                           index === 0 ? 'text-purple-600 dark:text-purple-400' : 'text-gray-500 dark:text-gray-400'
@@ -272,28 +273,112 @@ export default function GamePage() {
                         <span className="text-lg font-semibold text-gray-900 dark:text-white">
                           {pred.objek}
                         </span>
+                        
+                        {/* Confidence Badge */}
+                        {index === 0 && pred.confidence_level && (
+                          <span className={`px-2 py-1 rounded-full text-xs font-bold ${
+                            pred.confidence_level === 'unanimous' ? 'bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-300' :
+                            pred.confidence_level === 'high' ? 'bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300' :
+                            pred.confidence_level === 'medium' ? 'bg-yellow-100 dark:bg-yellow-900/30 text-yellow-700 dark:text-yellow-300' :
+                            'bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-300'
+                          }`}>
+                            {pred.confidence_level === 'unanimous' ? '🎯 UNANIMOUS' :
+                             pred.confidence_level === 'high' ? '✨ HIGH' :
+                             pred.confidence_level === 'medium' ? '🔍 MEDIUM' :
+                             '⚠️ LOW'}
+                          </span>
+                        )}
                       </div>
+                      
+                      {/* Score & Votes */}
                       <div className="text-right">
-                        <div className="text-sm font-medium text-gray-900 dark:text-white">
-                          Score: {(pred.score * 100).toFixed(1)}%
+                        <div className="flex items-center gap-2 justify-end">
+                          {pred.votes !== undefined && (
+                            <div className="flex items-center gap-1 text-xs font-medium text-purple-600 dark:text-purple-400">
+                              <Vote className="w-3 h-3" />
+                              <span>{pred.votes}pts</span>
+                            </div>
+                          )}
+                          <div className="text-sm font-bold text-gray-900 dark:text-white">
+                            {(pred.score * 100).toFixed(1)}%
+                          </div>
                         </div>
-                        <div className="text-xs text-gray-500 dark:text-gray-400">
-                          ST: {(pred.st * 100).toFixed(0)}% | NB: {(pred.nb * 100).toFixed(0)}%
+                      </div>
+                    </div>
+                    
+                    {/* Model Scores */}
+                    <div className="grid grid-cols-3 gap-2 mb-2">
+                      {/* Sentence Transformer */}
+                      <div className="bg-white dark:bg-gray-800 rounded-lg p-2 border border-gray-200 dark:border-gray-600">
+                        <div className="flex items-center gap-1 mb-1">
+                          <Brain className="w-3 h-3 text-blue-500" />
+                          <span className="text-xs font-medium text-gray-600 dark:text-gray-400">ST</span>
+                          {pred.st_rank && pred.st_rank > 0 && (
+                            <span className="ml-auto text-xs font-bold text-blue-600 dark:text-blue-400">#{pred.st_rank}</span>
+                          )}
+                        </div>
+                        <div className="text-sm font-bold text-gray-900 dark:text-white">
+                          {(pred.st * 100).toFixed(0)}%
+                        </div>
+                      </div>
+                      
+                      {/* Naive Bayes */}
+                      <div className="bg-white dark:bg-gray-800 rounded-lg p-2 border border-gray-200 dark:border-gray-600">
+                        <div className="flex items-center gap-1 mb-1">
+                          <Target className="w-3 h-3 text-green-500" />
+                          <span className="text-xs font-medium text-gray-600 dark:text-gray-400">NB</span>
+                          {pred.nb_rank && pred.nb_rank > 0 && (
+                            <span className="ml-auto text-xs font-bold text-green-600 dark:text-green-400">#{pred.nb_rank}</span>
+                          )}
+                        </div>
+                        <div className="text-sm font-bold text-gray-900 dark:text-white">
+                          {(pred.nb * 100).toFixed(0)}%
+                        </div>
+                      </div>
+                      
+                      {/* Logistic Regression */}
+                      <div className="bg-white dark:bg-gray-800 rounded-lg p-2 border border-gray-200 dark:border-gray-600">
+                        <div className="flex items-center gap-1 mb-1">
+                          <Award className="w-3 h-3 text-purple-500" />
+                          <span className="text-xs font-medium text-gray-600 dark:text-gray-400">LR</span>
+                          {pred.lr_rank && pred.lr_rank > 0 && (
+                            <span className="ml-auto text-xs font-bold text-purple-600 dark:text-purple-400">#{pred.lr_rank}</span>
+                          )}
+                        </div>
+                        <div className="text-sm font-bold text-gray-900 dark:text-white">
+                          {pred.lr ? (pred.lr * 100).toFixed(0) : 0}%
                         </div>
                       </div>
                     </div>
                     
                     {/* Progress Bar */}
-                    <div className="mt-2 h-2 bg-gray-200 dark:bg-gray-600 rounded-full overflow-hidden">
+                    <div className="h-2 bg-gray-200 dark:bg-gray-600 rounded-full overflow-hidden">
                       <div
                         className={`h-full transition-all ${
                           index === 0
-                            ? 'bg-linear-to-r from-purple-600 to-blue-600'
+                            ? 'bg-linear-to-r from-purple-600 via-blue-600 to-pink-600'
                             : 'bg-gray-400 dark:bg-gray-500'
                         }`}
                         style={{ width: `${pred.score * 100}%` }}
                       />
                     </div>
+                    
+                    {/* Voting Details for Top Prediction */}
+                    {index === 0 && pred.votes !== undefined && (
+                      <div className="mt-3 pt-3 border-t border-gray-200 dark:border-gray-600">
+                        <div className="flex items-center gap-2 text-xs text-gray-600 dark:text-gray-400">
+                          <Vote className="w-3 h-3" />
+                          <span className="font-medium">Voting Breakdown:</span>
+                          <span>
+                            {pred.st_rank === 1 ? '✅' : pred.st_rank === 2 ? '🥈' : pred.st_rank === 3 ? '🥉' : '⚪'} ST
+                            {' • '}
+                            {pred.nb_rank === 1 ? '✅' : pred.nb_rank === 2 ? '🥈' : pred.nb_rank === 3 ? '🥉' : '⚪'} NB
+                            {' • '}
+                            {pred.lr_rank === 1 ? '✅' : pred.lr_rank === 2 ? '🥈' : pred.lr_rank === 3 ? '🥉' : '⚪'} LR
+                          </span>
+                        </div>
+                      </div>
+                    )}
                   </div>
                 ))}
               </div>
@@ -360,8 +445,8 @@ export default function GamePage() {
 
         {/* Info */}
         <div className="mt-6 text-center text-sm text-gray-600 dark:text-gray-400">
-          <p>Model menggunakan <span className="font-semibold">Hybrid ML</span> (Sentence Transformer + Naive Bayes)</p>
-          <p className="mt-1">Setiap feedback akan melatih model untuk lebih akurat! 🚀</p>
+          <p>Model menggunakan <span className="font-semibold">Ensemble Voting</span> (3 Models: ST + NB + LR)</p>
+          <p className="mt-1">Setiap feedback akan melatih semua model untuk lebih akurat! 🚀</p>
         </div>
       </div>
 

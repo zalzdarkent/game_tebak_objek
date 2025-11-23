@@ -11,6 +11,7 @@ import torch
 from sentence_transformers import SentenceTransformer, util
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.naive_bayes import MultinomialNB
+from sklearn.linear_model import LogisticRegression
 from sklearn.preprocessing import LabelEncoder
 import warnings
 import os
@@ -27,7 +28,10 @@ df = None
 st_model = None
 tfidf = None
 nb_model = None
+lr_model = None  # Logistic Regression
+tfidf_lr = None  # Separate TF-IDF for LR
 label_encoder = None
+label_encoder_lr = None  # Separate encoder for LR
 objek_list = []
 objek_only = []
 objek_embeddings = None
@@ -41,7 +45,7 @@ stats = {"benar": 0, "salah": 0, "total_predictions": 0}
 # ============================================================
 def init_models():
     """Initialize ML models and load dataset"""
-    global df, st_model, tfidf, nb_model, label_encoder
+    global df, st_model, tfidf, nb_model, lr_model, tfidf_lr, label_encoder, label_encoder_lr
     
     print("🔄 Initializing models...")
     
@@ -67,9 +71,14 @@ def init_models():
     nb_model = MultinomialNB(alpha=0.1)
     label_encoder = LabelEncoder()
     
+    # Initialize TF-IDF + Logistic Regression (Model 3)
+    tfidf_lr = TfidfVectorizer(ngram_range=(1, 3), max_features=8000, min_df=1)
+    lr_model = LogisticRegression(max_iter=1000, C=1.0, random_state=42)
+    label_encoder_lr = LabelEncoder()
+    
     # Build models
     rebuild_all_models()
-    print("✅ All models ready!")
+    print("✅ All 3 models ready! (ST + NB + LR)")
 
 def gabung_teks(row):
     """Combine objek, deskripsi, kategori, dan kata_kunci untuk embedding lebih kaya"""
@@ -87,7 +96,7 @@ def gabung_teks(row):
     return " - ".join([p for p in text_parts if p])
 
 def rebuild_all_models():
-    """Rebuild both Semantic and NLP models"""
+    """Rebuild all 3 models: Semantic, Naive Bayes, and Logistic Regression"""
     global objek_list, objek_only, objek_embeddings
     global X_tfidf, y_encoded
     
@@ -121,7 +130,34 @@ def rebuild_all_models():
         y_encoded = label_encoder.fit_transform(train_labels)
         nb_model.fit(X_tfidf, y_encoded)
     
-    print("✅ Models rebuilt!")
+    # === Logistic Regression (Model 3) ===
+    # Use richer training data: deskripsi + clue_history + keywords
+    train_texts_lr = []
+    train_labels_lr = []
+    
+    for _, row in df.iterrows():
+        # Base description
+        train_texts_lr.append(row["deskripsi"].lower())
+        train_labels_lr.append(row["objek"])
+        
+        # Clue history
+        clues = row["clue_history"].split(", ")
+        for c in clues:
+            if len(c.strip()) > 2:
+                train_texts_lr.append(c.strip().lower())
+                train_labels_lr.append(row["objek"])
+        
+        # Keywords
+        if 'kata_kunci' in row and pd.notna(row['kata_kunci']):
+            train_texts_lr.append(row['kata_kunci'].lower())
+            train_labels_lr.append(row["objek"])
+    
+    if len(train_texts_lr) > 0:
+        X_tfidf_lr = tfidf_lr.fit_transform(train_texts_lr)
+        y_encoded_lr = label_encoder_lr.fit_transform(train_labels_lr)
+        lr_model.fit(X_tfidf_lr, y_encoded_lr)
+    
+    print("✅ All 3 models rebuilt!")
 
 # ============================================================
 #   PREDICTION FUNCTIONS
@@ -150,80 +186,97 @@ def predict_naive_bayes(clue):
     except:
         return {}
 
-def predict_hybrid(clue, top_k=5, weight_st=0.5, weight_nb=0.5):
-    """Hybrid prediction combining Semantic + Naive Bayes with Dynamic Weighting"""
+def predict_logistic_regression(clue):
+    """Predict using Logistic Regression"""
+    try:
+        X_new = tfidf_lr.transform([clue.lower()])
+        proba = lr_model.predict_proba(X_new)[0]
+        classes = label_encoder_lr.classes_
+        
+        hasil = {}
+        for i, p in enumerate(proba):
+            hasil[classes[i]] = float(p)
+        return hasil
+    except:
+        return {}
+
+def predict_ensemble_voting(clue, top_k=5):
+    """Ensemble prediction with 3 models using VOTING system"""
     
-    # Get scores from both models
+    # Get predictions from all 3 models
     scores_st = predict_semantic(clue)
     scores_nb = predict_naive_bayes(clue)
+    scores_lr = predict_logistic_regression(clue)
     
-    # === DYNAMIC WEIGHTING ===
-    # Hitung confidence dari masing-masing model
-    max_st = max(scores_st.values()) if scores_st else 0
-    max_nb = max(scores_nb.values()) if scores_nb else 0
+    # === VOTING MECHANISM ===
+    # Each model votes for their top prediction
+    votes = {}  # {objek: vote_count}
+    vote_details = {}  # {objek: {st_rank, nb_rank, lr_rank}}
     
-    # Normalize confidence ke range 0-1
-    confidence_st = max_st  # Sudah 0-1 dari cosine similarity
-    confidence_nb = max_nb  # Sudah 0-1 dari probability
+    # Get top 3 from each model
+    top_st = sorted(scores_st.items(), key=lambda x: x[1], reverse=True)[:3]
+    top_nb = sorted(scores_nb.items(), key=lambda x: x[1], reverse=True)[:3]
+    top_lr = sorted(scores_lr.items(), key=lambda x: x[1], reverse=True)[:3]
     
-    # Dynamic weight adjustment
-    # Jika salah satu model sangat yakin (>0.7), beri weight lebih besar
-    # Jika keduanya ragu (<0.4), balance 50-50
-    total_confidence = confidence_st + confidence_nb
+    # Count votes (top 1 = 3 points, top 2 = 2 points, top 3 = 1 point)
+    for i, (objek, _) in enumerate(top_st):
+        votes[objek] = votes.get(objek, 0) + (3 - i)
+        if objek not in vote_details:
+            vote_details[objek] = {"st_rank": 0, "nb_rank": 0, "lr_rank": 0}
+        vote_details[objek]["st_rank"] = i + 1
     
-    if total_confidence > 0:
-        # Weight proportional to confidence
-        if confidence_st > 0.7 and confidence_nb < 0.3:
-            # Semantic sangat yakin, NB ragu
-            weight_st_dynamic = 0.8
-            weight_nb_dynamic = 0.2
-        elif confidence_nb > 0.7 and confidence_st < 0.3:
-            # NB sangat yakin, Semantic ragu
-            weight_st_dynamic = 0.2
-            weight_nb_dynamic = 0.8
-        elif confidence_st > 0.6 or confidence_nb > 0.6:
-            # Salah satu cukup yakin, beri weight proporsional
-            weight_st_dynamic = confidence_st / total_confidence
-            weight_nb_dynamic = confidence_nb / total_confidence
-        else:
-            # Keduanya ragu, balance 50-50
-            weight_st_dynamic = 0.5
-            weight_nb_dynamic = 0.5
-    else:
-        # Fallback to default weights
-        weight_st_dynamic = weight_st
-        weight_nb_dynamic = weight_nb
+    for i, (objek, _) in enumerate(top_nb):
+        votes[objek] = votes.get(objek, 0) + (3 - i)
+        if objek not in vote_details:
+            vote_details[objek] = {"st_rank": 0, "nb_rank": 0, "lr_rank": 0}
+        vote_details[objek]["nb_rank"] = i + 1
     
-    # Normalize ST scores to 0-1 range
-    min_st = min(scores_st.values()) if scores_st else 0
-    range_st = max_st - min_st if max_st != min_st else 1
+    for i, (objek, _) in enumerate(top_lr):
+        votes[objek] = votes.get(objek, 0) + (3 - i)
+        if objek not in vote_details:
+            vote_details[objek] = {"st_rank": 0, "nb_rank": 0, "lr_rank": 0}
+        vote_details[objek]["lr_rank"] = i + 1
     
-    # Combine scores with dynamic weights
-    final_scores = {}
-    for objek in objek_only:
-        st_norm = (scores_st.get(objek, 0) - min_st) / range_st
-        nb_score = scores_nb.get(objek, 0)
-        
-        # Weighted average with dynamic weights
-        final_scores[objek] = (weight_st_dynamic * st_norm) + (weight_nb_dynamic * nb_score)
+    # Sort by votes
+    sorted_votes = sorted(votes.items(), key=lambda x: x[1], reverse=True)
     
-    # Sort and get top_k
-    sorted_scores = sorted(final_scores.items(), key=lambda x: x[1], reverse=True)
+    # Calculate confidence based on vote consensus
+    max_votes = sorted_votes[0][1] if sorted_votes else 0
     
+    # Build result with transparency
     hasil = []
-    for objek, score in sorted_scores[:top_k]:
+    for objek, vote_count in sorted_votes[:top_k]:
+        # Normalize scores
+        st_score = scores_st.get(objek, 0)
+        nb_score = scores_nb.get(objek, 0)
+        lr_score = scores_lr.get(objek, 0)
+        
+        # Average score from all models
+        avg_score = (st_score + nb_score + lr_score) / 3
+        
         hasil.append({
             "objek": objek,
-            "score": round(score, 4),
-            "st": round(scores_st.get(objek, 0), 4),
-            "nb": round(scores_nb.get(objek, 0), 4),
-            "weight_st": round(weight_st_dynamic, 2),
-            "weight_nb": round(weight_nb_dynamic, 2)
+            "score": round(avg_score, 4),
+            "votes": vote_count,
+            "st": round(st_score, 4),
+            "nb": round(nb_score, 4),
+            "lr": round(lr_score, 4),
+            "st_rank": vote_details[objek]["st_rank"],
+            "nb_rank": vote_details[objek]["nb_rank"],
+            "lr_rank": vote_details[objek]["lr_rank"]
         })
     
-    # Add metadata about confidence
+    # Add confidence level
     if hasil:
-        hasil[0]["confidence_level"] = "high" if hasil[0]["score"] > 0.7 else "medium" if hasil[0]["score"] > 0.4 else "low"
+        # High confidence: unanimous top 1 (all 3 models agree)
+        if hasil[0]["st_rank"] == 1 and hasil[0]["nb_rank"] == 1 and hasil[0]["lr_rank"] == 1:
+            hasil[0]["confidence_level"] = "unanimous"
+        elif hasil[0]["votes"] >= 7:  # At least 2 models strongly agree
+            hasil[0]["confidence_level"] = "high"
+        elif hasil[0]["votes"] >= 4:
+            hasil[0]["confidence_level"] = "medium"
+        else:
+            hasil[0]["confidence_level"] = "low"
     
     return hasil
 
@@ -303,8 +356,8 @@ def predict():
         if not clue:
             return jsonify({"error": "Clue is required"}), 400
         
-        # Get predictions
-        hasil = predict_hybrid(clue, top_k=top_k)
+        # Get predictions using ensemble voting
+        hasil = predict_ensemble_voting(clue, top_k=top_k)
         
         # Update stats
         stats["total_predictions"] += 1
